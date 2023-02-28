@@ -2,18 +2,16 @@ name: Wheels
 
 on:
   push:
-  pull_request:
-  release:
-    types:
-      - published
-  schedule:
-    # At 12:00 on every day-of-month
-    - cron: "0 12 */1 * *"
+    tags:
+      - v**
+  workflow_dispatch:  # allows running workflow manually from the Actions tab
 
+permissions:
+  contents: write
+  
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
-
 
 jobs:
   build_wheels:
@@ -24,10 +22,13 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         cibw_python: [ "cp37-*", "cp38-*", "cp39-*", "cp310-*", "cp311-*"]
-        cibw_arch: [ "x86_64", "i686" ]
+        cibw_arch: [ "x86_64", "aarch64" ]
 
     steps:
       - uses: actions/checkout@v3
+      - name: Set up QEMU
+        if: matrix.cibw_arch == 'aarch64'
+        uses: docker/setup-qemu-action@v2
       - name: Disable ptrace security restrictions
         run: |
           echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
@@ -41,7 +42,8 @@ jobs:
           CIBW_TEST_COMMAND: pytest {package}/tests
       - uses: actions/upload-artifact@v3
         with:
-          path: ./wheelhouse/*.whl
+          name: wheels
+          path: wheelhouse
 
   build_wheels_macos:
     name: Wheel for MacOS-${{ matrix.cibw_python }}-${{ matrix.cibw_arch }}
@@ -70,10 +72,10 @@ jobs:
           CIBW_TEST_COMMAND: pytest {package}/tests
           CIBW_BUILD_VERBOSITY: 1
           MACOSX_DEPLOYMENT_TARGET: "10.14"
-
       - uses: actions/upload-artifact@v3
         with:
-          path: ./wheelhouse/*.whl
+          name: wheels
+          path: wheelhouse
 
   build_sdist:
     name: Build source distribution
@@ -88,17 +90,27 @@ jobs:
         with:
           path: dist/*.tar.gz
 
-  upload_pypi:
+  release:
     needs: [build_wheels, build_wheels_macos, build_sdist]
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' && github.event.action == 'published'
     steps:
       - uses: actions/download-artifact@v3
         with:
-          name: artifact
-          path: dist
-
-      - uses: pypa/gh-action-pypi-publish@release/v1
+          name: wheels
+          path: wheelhouse
+      - uses: softprops/action-gh-release@v1
         with:
-          skip_existing: true
-          password: ${{ secrets.PYPI_PASSWORD }}
+          files: wheelhouse/*.whl
+      - uses: actions/setup-python@v4
+        with:
+          python-version: 3.x
+      - name: Write index.html
+        run: |
+          mkdir ./public
+          pip install dominate requests
+          curl -sSL https://gist.github.com/ddelange/e4fb438f2f724413f45c4bece46aacfa/raw/release_assets_pip_find_links.py | python - > ./public/index.html
+      - name: Deploy
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
